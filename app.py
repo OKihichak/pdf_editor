@@ -1,18 +1,14 @@
-import os
-from flask import Flask, request, render_template, send_from_directory
+import io
+from flask import Flask, request, render_template, send_file
 import fitz  # PyMuPDF
 import cv2
 import numpy as np
 from PIL import Image
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['PROCESSED_FOLDER'] = 'uploads'
-
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 
-def detect_and_redact_qr_code(page, zoom=8.0):
+def detect_and_redact_qr_code(page, zoom=4.0):  # reduced zoom to save memory
     text = page.get_text().lower()
     is_expert_page = "expertenkarten" in text
 
@@ -37,7 +33,6 @@ def detect_and_redact_qr_code(page, zoom=8.0):
         scale_x = page.rect.width / pix.width
         scale_y = page.rect.height / pix.height
         margin = 6
-
         qr_rect = fitz.Rect(
             (x - margin) * scale_x,
             (y - margin) * scale_y,
@@ -47,14 +42,15 @@ def detect_and_redact_qr_code(page, zoom=8.0):
         page.add_redact_annot(qr_rect, fill=(1, 1, 1))
 
 
-def process_pdf_all_in_one(input_pdf_path, output_pdf_path, logo_image_path="static/ensago_logo.png"):
+def process_pdf_memory(file_stream, logo_image_path="static/ensago_logo.png"):
     terms_to_delete = [
         "syte report", "transforming real estate with ai", "syte app", "syte", "syte-"
     ]
-    doc = fitz.open(input_pdf_path)
-    new_doc = fitz.open()
 
+    doc = fitz.open(stream=file_stream.read(), filetype="pdf")
+    new_doc = fitz.open()
     skipped_inhalt = False
+
     for i, page in enumerate(doc):
         text = page.get_text("text").lower()
         if "inhalt" in text and not skipped_inhalt:
@@ -68,7 +64,7 @@ def process_pdf_all_in_one(input_pdf_path, output_pdf_path, logo_image_path="sta
         new_doc.insert_pdf(doc, from_page=i, to_page=i)
 
     if new_doc.page_count == 0:
-        return False
+        return None
 
     rect_logo_top = fitz.Rect(420, 30, 580, 160)
     rect_logo_bottom = fitz.Rect(20, 780, 90, 820)
@@ -77,8 +73,7 @@ def process_pdf_all_in_one(input_pdf_path, output_pdf_path, logo_image_path="sta
         page = new_doc[page_num]
 
         for term in terms_to_delete:
-            matches = page.search_for(term)
-            for rect in matches:
+            for rect in page.search_for(term):
                 page.add_redact_annot(rect, fill=(1, 1, 1))
 
         page.add_redact_annot(rect_logo_bottom, fill=(1, 1, 1))
@@ -98,32 +93,26 @@ def process_pdf_all_in_one(input_pdf_path, output_pdf_path, logo_image_path="sta
             except Exception as e:
                 print(f"⚠️ Could not insert logo image: {e}")
 
-    new_doc.save(output_pdf_path, garbage=3, deflate=True)
-    return True
+    output_stream = io.BytesIO()
+    new_doc.save(output_stream, garbage=3, deflate=True)
+    output_stream.seek(0)
+    return output_stream
 
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        uploaded_file = request.files["pdf"]
-        if uploaded_file.filename.endswith(".pdf"):
-            input_path = os.path.join(app.config['UPLOAD_FOLDER'], uploaded_file.filename)
-            uploaded_file.save(input_path)
-
-            output_path = os.path.join(app.config['PROCESSED_FOLDER'], "processed_" + uploaded_file.filename)
-
-            if process_pdf_all_in_one(input_path, output_path):
-                return render_template("index.html", download_link="processed_" + uploaded_file.filename)
+        uploaded_file = request.files.get("pdf")
+        if uploaded_file and uploaded_file.filename.endswith(".pdf"):
+            result = process_pdf_memory(uploaded_file)
+            if result:
+                return send_file(
+                    result,
+                    as_attachment=True,
+                    download_name="ensago_cleaned.pdf",
+                    mimetype="application/pdf"
+                )
             else:
-                return "❌ No content was processed. Check your file."
+                return "❌ No valid content to process."
 
     return render_template("index.html")
-
-
-@app.route("/uploads/<filename>")
-def download_file(filename):
-    return send_from_directory(app.config['PROCESSED_FOLDER'], filename, as_attachment=True)
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
