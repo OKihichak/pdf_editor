@@ -4,15 +4,12 @@ import fitz  # PyMuPDF
 import cv2
 import numpy as np
 from PIL import Image
-from qreader import QReader
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['PROCESSED_FOLDER'] = 'uploads'
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-
-qreader = QReader()
 
 
 def detect_and_redact_qr_code(page, zoom=8.0):
@@ -89,19 +86,15 @@ def process_pdf_all_in_one(input_pdf_path, output_pdf_path, logo_image_path="sta
             page.add_redact_annot(rect_logo_top, fill=(1, 1, 1))
 
         detect_and_redact_qr_code(page)
-
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
 
-        page.insert_text(fitz.Point(35, 805), "EnSaGo Report",
-                         fontsize=8, fontname="helv", color=(0, 0, 0))
+        page.insert_text(fitz.Point(35, 805), "EnSaGo Report", fontsize=8, fontname="helv", color=(0, 0, 0))
 
         if page_num == 0:
             try:
                 page.insert_image(rect_logo_top, filename=logo_image_path)
-                page.insert_text(fitz.Point(475, 125), "Invest Green, Earn More",
-                                 fontsize=7.5, fontname="helv", color=(0, 0, 0))
-                page.insert_text(fitz.Point(510, 135), "www.ensago.de",
-                                 fontsize=6.5, fontname="helv", color=(0, 0, 0))
+                page.insert_text(fitz.Point(475, 125), "Invest Green, Earn More", fontsize=7.5, fontname="helv", color=(0, 0, 0))
+                page.insert_text(fitz.Point(510, 135), "www.ensago.de", fontsize=6.5, fontname="helv", color=(0, 0, 0))
             except Exception as e:
                 print(f"⚠️ Could not insert logo image: {e}")
 
