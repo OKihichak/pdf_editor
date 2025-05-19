@@ -106,10 +106,13 @@ def index():
         if uploaded_file and uploaded_file.filename.endswith(".pdf"):
             result = process_pdf_memory(uploaded_file)
             if result:
+                original_filename = uploaded_file.filename.rsplit("/", 1)[-1]
+                processed_filename = f"processed_{original_filename}"
+
                 return send_file(
                     result,
                     as_attachment=True,
-                    download_name="ensago_cleaned.pdf",
+                    download_name=processed_filename,
                     mimetype="application/pdf"
                 )
             else:
