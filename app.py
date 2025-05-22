@@ -102,7 +102,14 @@ def process_pdf_memory(file_stream, logo_image_path="static/ensago_logo.png"):
 #FINANCE REPORT
 
 
-def process_finance_report(file_stream, logo_path="static/ensago_logo.png"):
+import fitz  # PyMuPDF
+import io
+import cv2
+import numpy as np
+from PIL import Image
+
+
+def process_finance_report(file_stream, logo_path="static/ensago_logo.png", blur_finance=False):
     original = fitz.open(stream=file_stream.read(), filetype="pdf")
     subset = fitz.open()
 
@@ -111,6 +118,7 @@ def process_finance_report(file_stream, logo_path="static/ensago_logo.png"):
     start_after_kontakt = None
     end_before_glossar = None
 
+    # Step 1: Extract all pages up to (but not including) Glossar
     for i, page in enumerate(original):
         text = page.get_text("text").lower()
         lines = [line.strip() for line in text.split("\n") if line.strip()]
@@ -137,21 +145,22 @@ def process_finance_report(file_stream, logo_path="static/ensago_logo.png"):
     if start_after_kontakt is not None and end_before_glossar is not None:
         subset.insert_pdf(original, from_page=start_after_kontakt, to_page=end_before_glossar - 1)
 
-    # === Redaction Phase ===
+    # Step 2: Detect last Expertenkarten page
     last_expertenkarten_page = -1
-    terms_to_delete = [
-        "syte report", "Transforming Real Estate with AI", "syte App", "www.syte.ms", "syte"
-    ]
-
     for i, page in enumerate(subset):
         if "expertenkarten" in page.get_text().lower():
             last_expertenkarten_page = i
 
+    # Step 3: Apply redactions first (MUST be done before rendering)
+    terms_to_delete = [
+        "syte report", "Transforming Real Estate with AI", "syte App", "www.syte.ms", "syte"
+    ]
     rect_logo_top = fitz.Rect(420, 30, 580, 160)
     rect_logo_bottom = fitz.Rect(20, 780, 90, 820)
     rect_subtitle = fitz.Rect(10, 20, 800, 90)
 
     for i, page in enumerate(subset):
+        # Redaction boxes
         for term in terms_to_delete:
             for rect in page.search_for(term):
                 page.add_redact_annot(rect, fill=(1, 1, 1))
@@ -166,24 +175,53 @@ def process_finance_report(file_stream, logo_path="static/ensago_logo.png"):
         detect_and_redact_qr_code(page)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
 
-        page.insert_text(fitz.Point(35, 805), "EnSaGo Report",
-                         fontsize=8, fontname="helv", color=(0, 0, 0))
+    # Step 4: Now render pages to final output (blur or copy)
+    output = fitz.open()
+
+    for i, page in enumerate(subset):
+        if blur_finance and i > last_expertenkarten_page + 1:
+            # Convert page to image and apply blur
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            blurred = cv2.GaussianBlur(img_cv, (21, 21), 0)
+            blurred_img = Image.fromarray(cv2.cvtColor(blurred, cv2.COLOR_BGR2RGB))
+
+            img_bytes = io.BytesIO()
+            blurred_img.save(img_bytes, format="PNG")
+            img_bytes.seek(0)
+
+            page_rect = page.rect
+            new_page = output.new_page(width=page_rect.width, height=page_rect.height)
+            insert_rect = fitz.Rect(0, 0, page_rect.width, page_rect.height)
+            new_page.insert_image(insert_rect, stream=img_bytes.read(), keep_proportion=False)
+            continue
+
+        # Copy redacted page safely
+        output.insert_pdf(subset, from_page=i, to_page=i)
+        if len(output) == 0:
+            continue  # skip overlay if page wasn't copied
+
+        output_page = output[-1]  # last added page
+
+        # Overlay
+        output_page.insert_text(fitz.Point(35, 805), "EnSaGo Report", fontsize=8, fontname="helv", color=(0, 0, 0))
 
         if i == 0:
-            page.insert_image(rect_logo_top, filename=logo_path)
-            page.insert_text(fitz.Point(475, 125), "Invest Green, Earn More",
-                             fontsize=7.5, fontname="helv", color=(0, 0, 0))
-            page.insert_text(fitz.Point(510, 135), "www.ensago.de",
-                             fontsize=6.5, fontname="helv", color=(0, 0, 0))
+            output_page.insert_image(rect_logo_top, filename=logo_path)
+            output_page.insert_text(fitz.Point(475, 125), "Invest Green, Earn More", fontsize=7.5, fontname="helv", color=(0, 0, 0))
+            output_page.insert_text(fitz.Point(510, 135), "www.ensago.de", fontsize=6.5, fontname="helv", color=(0, 0, 0))
 
         if i == last_expertenkarten_page + 1:
-            page.insert_text(fitz.Point(460, 70), "* Alle Preise sind Nettopreise",
-                             fontsize=7.5, fontname="helv", color=(0, 0, 0))
+            output_page.insert_text(fitz.Point(460, 70), "* Alle Preise sind Nettopreise", fontsize=7.5, fontname="helv", color=(0, 0, 0))
 
+    # Return memory stream
     output_stream = io.BytesIO()
-    subset.save(output_stream, garbage=3, deflate=True)
+    output.save(output_stream, garbage=3, deflate=True)
     output_stream.seek(0)
     return output_stream
+
+
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -212,18 +250,19 @@ def index():
 def finance_report():
     if request.method == "POST":
         uploaded_file = request.files.get("pdf")
-
+        blur_finance = request.form.get("blur_finance") == "on"
 
         if uploaded_file and uploaded_file.filename.endswith(".pdf"):
-            # Extract original file name
             original_name = uploaded_file.filename.rsplit("/", 1)[-1]
-            result_filename = f"finance_report_{original_name}"
+            prefix = "blurred_finance_report_" if blur_finance else "finance_report_"
+            result_filename = f"{prefix}{original_name}"
 
-            result = process_finance_report(uploaded_file)
+            result = process_finance_report(uploaded_file, blur_finance=blur_finance)
 
             return send_file(result, as_attachment=True,
                              download_name=result_filename,
                              mimetype="application/pdf")
 
     return render_template("finance_report.html")
+
 
