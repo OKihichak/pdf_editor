@@ -99,43 +99,91 @@ def process_pdf_memory(file_stream, logo_image_path="static/ensago_logo.png"):
     return output_stream
 
 
-# --- Kontakt to Glossar Processor ---
-def extract_and_clean_kontakt_to_glossar(file_stream, logo_image_path="static/ensago_logo.png"):
-    doc = fitz.open(stream=file_stream.read(), filetype="pdf")
-    start_page = None
-    end_page = None
+#FINANCE REPORT
 
-    for i, page in enumerate(doc):
-        text = page.get_text("text").lower().strip()
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if start_page is None and lines and lines[0].startswith("kontakt"):
-            start_page = i + 1
+
+def process_finance_report(file_stream, logo_path="static/ensago_logo.png"):
+    original = fitz.open(stream=file_stream.read(), filetype="pdf")
+    subset = fitz.open()
+
+    kontakt_triggered = False
+    skipped_inhalt = False
+    start_after_kontakt = None
+    end_before_glossar = None
+
+    for i, page in enumerate(original):
+        text = page.get_text("text").lower()
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+
+        if "inhalt" in text and not skipped_inhalt:
+            skipped_inhalt = True
             continue
-        if "glossar" in text and start_page is not None:
-            end_page = i
+
+        if "sanierungspotenziale" in text:
+            continue
+
+        if not kontakt_triggered and lines and lines[0].startswith("kontakt"):
+            kontakt_triggered = True
+            start_after_kontakt = i + 1
+            continue
+
+        if kontakt_triggered and "glossar" in text:
+            end_before_glossar = i
             break
 
-    if start_page is None or end_page is None or end_page <= start_page:
-        return None
+        if not kontakt_triggered:
+            subset.insert_pdf(original, from_page=i, to_page=i)
 
-    new_doc = fitz.open()
-    new_doc.insert_pdf(doc, from_page=start_page, to_page=end_page - 1)
+    if start_after_kontakt is not None and end_before_glossar is not None:
+        subset.insert_pdf(original, from_page=start_after_kontakt, to_page=end_before_glossar - 1)
 
-    rect_logo = fitz.Rect(480, 20, 580, 40)
-    rect_subheading = fitz.Rect(10, 50, 400, 70)
+    # === Redaction Phase ===
+    last_expertenkarten_page = -1
+    terms_to_delete = [
+        "syte report", "Transforming Real Estate with AI", "syte App", "www.syte.ms", "syte"
+    ]
 
-    for page_index, page in enumerate(new_doc):
-        if page_index == 0:
-            page.add_redact_annot(rect_logo, fill=(1, 1, 1))
-            page.add_redact_annot(rect_subheading, fill=(1, 1, 1))
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
-            page.insert_image(rect_logo, filename=logo_image_path)
+    for i, page in enumerate(subset):
+        if "expertenkarten" in page.get_text().lower():
+            last_expertenkarten_page = i
+
+    rect_logo_top = fitz.Rect(420, 30, 580, 160)
+    rect_logo_bottom = fitz.Rect(20, 780, 90, 820)
+    rect_subtitle = fitz.Rect(10, 20, 800, 90)
+
+    for i, page in enumerate(subset):
+        for term in terms_to_delete:
+            for rect in page.search_for(term):
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+
+        if i == last_expertenkarten_page + 1:
+            page.add_redact_annot(rect_subtitle, fill=(1, 1, 1))
+
+        page.add_redact_annot(rect_logo_bottom, fill=(1, 1, 1))
+        if i == 0:
+            page.add_redact_annot(rect_logo_top, fill=(1, 1, 1))
+
+        detect_and_redact_qr_code(page)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+
+        page.insert_text(fitz.Point(35, 805), "EnSaGo Report",
+                         fontsize=8, fontname="helv", color=(0, 0, 0))
+
+        if i == 0:
+            page.insert_image(rect_logo_top, filename=logo_path)
+            page.insert_text(fitz.Point(475, 125), "Invest Green, Earn More",
+                             fontsize=7.5, fontname="helv", color=(0, 0, 0))
+            page.insert_text(fitz.Point(510, 135), "www.ensago.de",
+                             fontsize=6.5, fontname="helv", color=(0, 0, 0))
+
+        if i == last_expertenkarten_page + 1:
+            page.insert_text(fitz.Point(460, 70), "* Alle Preise sind Nettopreise",
+                             fontsize=7.5, fontname="helv", color=(0, 0, 0))
 
     output_stream = io.BytesIO()
-    new_doc.save(output_stream, garbage=3, deflate=True)
+    subset.save(output_stream, garbage=3, deflate=True)
     output_stream.seek(0)
     return output_stream
-
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -159,21 +207,23 @@ def index():
 
     return render_template("index.html")
 
+
 @app.route("/finance-report", methods=["GET", "POST"])
 def finance_report():
     if request.method == "POST":
         uploaded_file = request.files.get("pdf")
+
+
         if uploaded_file and uploaded_file.filename.endswith(".pdf"):
-            result = extract_and_clean_kontakt_to_glossar(uploaded_file.stream, app.config['LOGO_PATH'])
-            if result:
-                return send_file(
-                    result,
-                    as_attachment=True,
-                    download_name=f"finance_cleaned_{uploaded_file.filename}",
-                    mimetype="application/pdf"
-                )
-            else:
-                return "❌ Could not find 'Kontakt' to 'Glossar' section in this file.", 400
+            # Extract original file name
+            original_name = uploaded_file.filename.rsplit("/", 1)[-1]
+            result_filename = f"finance_report_{original_name}"
+
+            result = process_finance_report(uploaded_file)
+
+            return send_file(result, as_attachment=True,
+                             download_name=result_filename,
+                             mimetype="application/pdf")
 
     return render_template("finance_report.html")
 
