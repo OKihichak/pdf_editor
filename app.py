@@ -101,14 +101,6 @@ def process_pdf_memory(file_stream, logo_image_path="static/ensago_logo.png"):
 
 #FINANCE REPORT
 
-
-import fitz  # PyMuPDF
-import io
-import cv2
-import numpy as np
-from PIL import Image
-
-
 def process_finance_report(file_stream, logo_path="static/ensago_logo.png", blur_finance=False):
     original = fitz.open(stream=file_stream.read(), filetype="pdf")
     subset = fitz.open()
