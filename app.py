@@ -8,7 +8,7 @@ from PIL import Image
 app = Flask(__name__)
 app.config['LOGO_PATH'] = 'static/ensago_logo.png'
 
-def detect_and_redact_qr_code(page, zoom=6.0):  # reduced zoom to save memory
+def detect_and_redact_qr_code(page, zoom=5.0):  # reduced zoom to save memory
     text = page.get_text().lower()
     is_expert_page = "expertenkarten" in text
 
