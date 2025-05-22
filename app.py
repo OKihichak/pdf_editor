@@ -6,9 +6,9 @@ import numpy as np
 from PIL import Image
 
 app = Flask(__name__)
+app.config['LOGO_PATH'] = 'static/ensago_logo.png'
 
-
-def detect_and_redact_qr_code(page, zoom=4.0):  # reduced zoom to save memory
+def detect_and_redact_qr_code(page, zoom=6.0):  # reduced zoom to save memory
     text = page.get_text().lower()
     is_expert_page = "expertenkarten" in text
 
@@ -99,6 +99,45 @@ def process_pdf_memory(file_stream, logo_image_path="static/ensago_logo.png"):
     return output_stream
 
 
+# --- Kontakt to Glossar Processor ---
+def extract_and_clean_kontakt_to_glossar(file_stream, logo_image_path="static/ensago_logo.png"):
+    doc = fitz.open(stream=file_stream.read(), filetype="pdf")
+    start_page = None
+    end_page = None
+
+    for i, page in enumerate(doc):
+        text = page.get_text("text").lower().strip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if start_page is None and lines and lines[0].startswith("kontakt"):
+            start_page = i + 1
+            continue
+        if "glossar" in text and start_page is not None:
+            end_page = i
+            break
+
+    if start_page is None or end_page is None or end_page <= start_page:
+        return None
+
+    new_doc = fitz.open()
+    new_doc.insert_pdf(doc, from_page=start_page, to_page=end_page - 1)
+
+    rect_logo = fitz.Rect(480, 20, 580, 40)
+    rect_subheading = fitz.Rect(10, 50, 400, 70)
+
+    for page_index, page in enumerate(new_doc):
+        if page_index == 0:
+            page.add_redact_annot(rect_logo, fill=(1, 1, 1))
+            page.add_redact_annot(rect_subheading, fill=(1, 1, 1))
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+            page.insert_image(rect_logo, filename=logo_image_path)
+
+    output_stream = io.BytesIO()
+    new_doc.save(output_stream, garbage=3, deflate=True)
+    output_stream.seek(0)
+    return output_stream
+
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
@@ -119,3 +158,22 @@ def index():
                 return "❌ No valid content to process."
 
     return render_template("index.html")
+
+@app.route("/finance-report", methods=["GET", "POST"])
+def finance_report():
+    if request.method == "POST":
+        uploaded_file = request.files.get("pdf")
+        if uploaded_file and uploaded_file.filename.endswith(".pdf"):
+            result = extract_and_clean_kontakt_to_glossar(uploaded_file.stream, app.config['LOGO_PATH'])
+            if result:
+                return send_file(
+                    result,
+                    as_attachment=True,
+                    download_name=f"finance_cleaned_{uploaded_file.filename}",
+                    mimetype="application/pdf"
+                )
+            else:
+                return "❌ Could not find 'Kontakt' to 'Glossar' section in this file.", 400
+
+    return render_template("finance_report.html")
+
