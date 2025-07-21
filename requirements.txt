@@ -3,3 +3,4 @@ gunicorn
 PyMuPDF
 opencv-python-headless
 Pillow
+PyPDF2
