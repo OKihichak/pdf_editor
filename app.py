@@ -4,6 +4,8 @@ import fitz  # PyMuPDF
 import cv2
 import numpy as np
 from PIL import Image
+from PyPDF2 import PdfMerger
+
 
 app = Flask(__name__)
 app.config['LOGO_PATH'] = 'static/ensago_logo.png'
@@ -99,119 +101,33 @@ def process_pdf_memory(file_stream, logo_image_path="static/ensago_logo.png"):
     return output_stream
 
 
-#FINANCE REPORT
 
-# def process_finance_report(file_stream, logo_path="static/ensago_logo.png", blur_finance=False):
-#     original = fitz.open(stream=file_stream.read(), filetype="pdf")
-#     subset = fitz.open()
 
-#     kontakt_triggered = False
-#     skipped_inhalt = False
-#     start_after_kontakt = None
-#     end_before_glossar = None
 
-#     # Step 1: Extract all pages up to (but not including) Glossar
-#     for i, page in enumerate(original):
-#         text = page.get_text("text").lower()
-#         lines = [line.strip() for line in text.split("\n") if line.strip()]
 
-#         if "inhalt" in text and not skipped_inhalt:
-#             skipped_inhalt = True
-#             continue
 
-#         if "sanierungspotenziale" in text:
-#             continue
-
-#         if not kontakt_triggered and lines and lines[0].startswith("kontakt"):
-#             kontakt_triggered = True
-#             start_after_kontakt = i + 1
-#             continue
-
-#         if kontakt_triggered and "glossar" in text:
-#             end_before_glossar = i
-#             break
-
-#         if not kontakt_triggered:
-#             subset.insert_pdf(original, from_page=i, to_page=i)
-
-#     if start_after_kontakt is not None and end_before_glossar is not None:
-#         subset.insert_pdf(original, from_page=start_after_kontakt, to_page=end_before_glossar - 1)
-
-#     # Step 2: Detect last Expertenkarten page
-#     last_expertenkarten_page = -1
-#     for i, page in enumerate(subset):
-#         if "expertenkarten" in page.get_text().lower():
-#             last_expertenkarten_page = i
-
-#     # Step 3: Apply redactions first (MUST be done before rendering)
-#     terms_to_delete = [
-#         "syte report", "Transforming Real Estate with AI", "syte App", "www.syte.ms", "syte"
-#     ]
-#     rect_logo_top = fitz.Rect(420, 30, 580, 160)
-#     rect_logo_bottom = fitz.Rect(20, 780, 90, 820)
-#     rect_subtitle = fitz.Rect(10, 20, 800, 90)
-
-#     for i, page in enumerate(subset):
-#         # Redaction boxes
-#         for term in terms_to_delete:
-#             for rect in page.search_for(term):
-#                 page.add_redact_annot(rect, fill=(1, 1, 1))
-
-#         if i == last_expertenkarten_page + 1:
-#             page.add_redact_annot(rect_subtitle, fill=(1, 1, 1))
-
-#         page.add_redact_annot(rect_logo_bottom, fill=(1, 1, 1))
-#         if i == 0:
-#             page.add_redact_annot(rect_logo_top, fill=(1, 1, 1))
-
-#         detect_and_redact_qr_code(page)
-#         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
-
-#     # Step 4: Now render pages to final output (blur or copy)
-#     output = fitz.open()
-
-#     for i, page in enumerate(subset):
-#         if blur_finance and i > last_expertenkarten_page + 1:
-#             # Convert page to image and apply blur
-#             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-#             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-#             img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-#             blurred = cv2.GaussianBlur(img_cv, (21, 21), 0)
-#             blurred_img = Image.fromarray(cv2.cvtColor(blurred, cv2.COLOR_BGR2RGB))
-
-#             img_bytes = io.BytesIO()
-#             blurred_img.save(img_bytes, format="PNG")
-#             img_bytes.seek(0)
-
-#             page_rect = page.rect
-#             new_page = output.new_page(width=page_rect.width, height=page_rect.height)
-#             insert_rect = fitz.Rect(0, 0, page_rect.width, page_rect.height)
-#             new_page.insert_image(insert_rect, stream=img_bytes.read(), keep_proportion=False)
-#             continue
-
-#         # Copy redacted page safely
-#         output.insert_pdf(subset, from_page=i, to_page=i)
-#         if len(output) == 0:
-#             continue  # skip overlay if page wasn't copied
-
-#         output_page = output[-1]  # last added page
-
-#         # Overlay
-#         output_page.insert_text(fitz.Point(35, 805), "EnSaGo Report", fontsize=8, fontname="helv", color=(0, 0, 0))
-
-#         if i == 0:
-#             output_page.insert_image(rect_logo_top, filename=logo_path)
-#             output_page.insert_text(fitz.Point(475, 125), "Invest Green, Earn More", fontsize=7.5, fontname="helv", color=(0, 0, 0))
-#             output_page.insert_text(fitz.Point(510, 135), "www.ensago.de", fontsize=6.5, fontname="helv", color=(0, 0, 0))
-
-#         if i == last_expertenkarten_page + 1:
-#             output_page.insert_text(fitz.Point(460, 70), "* Alle Preise sind Nettopreise", fontsize=7.5, fontname="helv", color=(0, 0, 0))
-
-#     # Return memory stream
-#     output_stream = io.BytesIO()
-#     output.save(output_stream, garbage=3, deflate=True)
-#     output_stream.seek(0)
-#     return output_stream
+@app.route("/merge", methods=["GET", "POST"])
+def merge_pdfs():
+    if request.method == "POST":
+        file1 = request.files.get("file1")
+        file2 = request.files.get("file2")
+        if file1 and file2 and file1.filename.endswith(".pdf") and file2.filename.endswith(".pdf"):
+            merger = PdfMerger()
+            merger.append(fileobj=file1.stream)
+            merger.append(fileobj=file2.stream)
+            merged_output = io.BytesIO()
+            merger.write(merged_output)
+            merger.close()
+            merged_output.seek(0)
+            return send_file(
+                merged_output,
+                as_attachment=True,
+                download_name="merged_EnSaGo_Report.pdf",
+                mimetype="application/pdf"
+            )
+        else:
+            return "Please upload two valid PDF files."
+    return render_template("merge.html")
 
 
 
@@ -223,16 +139,9 @@ def index():
         if uploaded_file and uploaded_file.filename.endswith(".pdf"):
             result = process_pdf_memory(uploaded_file)
             if result:
-                # Get cleaned original filename
                 original_filename = uploaded_file.filename.rsplit("/", 1)[-1]
                 original_filename = original_filename.replace("syte_report_", "").replace("syte_report", "")
-
-                # Final new name
                 processed_filename = f"EnSaGo_Gebäudedatenreport_{original_filename}"
-
-                # Rewind before sending to user
-                result.seek(0)
-
                 return send_file(
                     result,
                     as_attachment=True,
@@ -241,28 +150,14 @@ def index():
                 )
             else:
                 return "No valid content to process."
+        else:
+            return "Please upload a valid PDF file."  # <-- Add this line
 
     return render_template("index.html")
 
 
 
-# @app.route("/finance-report", methods=["GET", "POST"])
-# def finance_report():
-#     if request.method == "POST":
-#         uploaded_file = request.files.get("pdf")
-#         blur_finance = request.form.get("blur_finance") == "on"
 
-#         if uploaded_file and uploaded_file.filename.endswith(".pdf"):
-#             original_name = uploaded_file.filename.rsplit("/", 1)[-1]
-#             prefix = "blurred_finance_report_" if blur_finance else "finance_report_"
-#             result_filename = f"{prefix}{original_name}"
 
-#             result = process_finance_report(uploaded_file, blur_finance=blur_finance)
-
-#             return send_file(result, as_attachment=True,
-#                              download_name=result_filename,
-#                              mimetype="application/pdf")
-
-#     return render_template("finance_report.html")
 
 
