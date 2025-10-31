@@ -102,6 +102,112 @@ def process_pdf_memory(file_stream, logo_image_path="static/ensago_logo.png"):
 
 
 
+def process_financial_pdf_memory(file_stream, logo_image_path="static/ensago_logo.png"):
+    TERMS_TO_DELETE = [
+        "syte report", "transforming real estate with ai", "syte app", "syte", "syte-",
+        "s yte  AI P rof it", "syte AI Profit"
+    ]
+
+    doc = fitz.open(stream=file_stream.read(), filetype="pdf")
+
+    # 🗑️ Delete 3rd page (index 2) if it exists
+    if doc.page_count > 2:
+        doc.delete_page(2)
+
+    # 🗑️ Delete last page if more than one remains
+    if doc.page_count > 1:
+        doc.delete_page(-1)
+
+    for i, page in enumerate(doc):
+        page_width = page.rect.width
+        is_first_page = (i == 0)
+
+        rect_syte_logo = fitz.Rect(140, 30, 470, 180)
+        rect_footer = fitz.Rect(0, 550, 600, 840)
+        logo_area_small = fitz.Rect(15, 25, 100, 60)
+
+        # --- Redact main areas ---
+        if is_first_page:
+            page.add_redact_annot(rect_syte_logo, fill=(1, 1, 1))
+            page.add_redact_annot(rect_footer, fill=(1, 1, 1))
+        else:
+            page.add_redact_annot(logo_area_small, fill=(1, 1, 1))
+
+        # --- Delete and replace keywords ---
+        for term in TERMS_TO_DELETE:
+            found_rects = page.search_for(
+                term,
+                flags=fitz.TEXT_PRESERVE_LIGATURES |
+                      fitz.TEXT_DEHYPHENATE |
+                      fitz.TEXT_INHIBIT_SPACES
+            )
+            for rect in found_rects:
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+                page.insert_textbox(
+                    rect,
+                    "EnSaGo",
+                    fontname="helv",
+                    fontsize=10,
+                    color=(0, 0, 0),
+                    align=fitz.TEXT_ALIGN_CENTER
+                )
+
+        # --- QR cleaning ---
+        detect_and_redact_qr_code(page)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+
+        # --- Insert logos and branding ---
+        if is_first_page:
+            try:
+                page.insert_image(rect_syte_logo, filename=logo_image_path)
+                branding_lines = [
+                    ("Invest Green, Earn More", 11.5),
+                    ("www.ensago.de", 10),
+                ]
+                y = 145
+                for text, size in branding_lines:
+                    w = fitz.get_text_length(text, fontsize=size, fontname="helv")
+                    x = (page_width - w) / 2
+                    page.insert_text(fitz.Point(x, y), text, fontsize=size, fontname="helv", color=(0, 0, 0))
+                    y += size + 2
+            except Exception as e:
+                print(f"⚠️ Could not insert main logo: {e}")
+        else:
+            try:
+                page.insert_image(logo_area_small, filename=logo_image_path)
+            except Exception as e:
+                print(f"⚠️ Could not insert small logo: {e}")
+
+    # --- Save processed PDF ---
+    output_stream = io.BytesIO()
+    doc.save(output_stream, garbage=3, deflate=True)
+    doc.close()
+    output_stream.seek(0)
+    return output_stream
+
+
+
+@app.route("/financial", methods=["GET", "POST"])
+def financial_report():
+    if request.method == "POST":
+        uploaded_file = request.files.get("pdf")
+        if uploaded_file and uploaded_file.filename.endswith(".pdf"):
+            result = process_financial_pdf_memory(uploaded_file)
+            if result:
+                original_filename = uploaded_file.filename.rsplit("/", 1)[-1]
+                processed_filename = f"EnSaGo_Finanzbericht_{original_filename}"
+                return send_file(
+                    result,
+                    as_attachment=True,
+                    download_name=processed_filename,
+                    mimetype="application/pdf"
+                )
+            else:
+                return "⚠️ No valid pages to process."
+        else:
+            return "⚠️ Please upload a valid PDF file."
+    return render_template("financial_report.html")
+
 
 
 
