@@ -108,6 +108,7 @@ def process_financial_pdf_memory(file_stream, logo_image_path="static/ensago_log
         "s yte  AI P rof it", "syte AI Profit"
     ]
 
+    # Load PDF from memory
     doc = fitz.open(stream=file_stream.read(), filetype="pdf")
 
     # 🗑️ Delete 3rd page (index 2) if it exists
@@ -119,21 +120,22 @@ def process_financial_pdf_memory(file_stream, logo_image_path="static/ensago_log
         doc.delete_page(-1)
 
     for i, page in enumerate(doc):
-        page_width = page.rect.width
         is_first_page = (i == 0)
+        page_width = page.rect.width
 
+        # Define redaction areas
         rect_syte_logo = fitz.Rect(140, 30, 470, 180)
         rect_footer = fitz.Rect(0, 550, 600, 840)
-        logo_area_small = fitz.Rect(15, 25, 100, 60)
+        logo_area_small = fitz.Rect(15, 20, 100, 60)
 
-        # --- Redact main areas ---
+        # Redact logo/header/footer
         if is_first_page:
             page.add_redact_annot(rect_syte_logo, fill=(1, 1, 1))
             page.add_redact_annot(rect_footer, fill=(1, 1, 1))
         else:
             page.add_redact_annot(logo_area_small, fill=(1, 1, 1))
 
-        # --- Delete and replace keywords ---
+        # Redact and replace specific terms with 'EnSaGo'
         for term in TERMS_TO_DELETE:
             found_rects = page.search_for(
                 term,
@@ -152,14 +154,14 @@ def process_financial_pdf_memory(file_stream, logo_image_path="static/ensago_log
                     align=fitz.TEXT_ALIGN_CENTER
                 )
 
-        # --- QR cleaning ---
-        detect_and_redact_qr_code(page)
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+        # Finalize all redactions (no image redaction needed)
+        page.apply_redactions(images=0)
 
-        # --- Insert logos and branding ---
-        if is_first_page:
-            try:
+        # Insert logos and branding
+        try:
+            if is_first_page:
                 page.insert_image(rect_syte_logo, filename=logo_image_path)
+
                 branding_lines = [
                     ("Invest Green, Earn More", 11.5),
                     ("www.ensago.de", 10),
@@ -168,17 +170,20 @@ def process_financial_pdf_memory(file_stream, logo_image_path="static/ensago_log
                 for text, size in branding_lines:
                     w = fitz.get_text_length(text, fontsize=size, fontname="helv")
                     x = (page_width - w) / 2
-                    page.insert_text(fitz.Point(x, y), text, fontsize=size, fontname="helv", color=(0, 0, 0))
+                    page.insert_text(
+                        fitz.Point(x, y),
+                        text,
+                        fontsize=size,
+                        fontname="helv",
+                        color=(0, 0, 0)
+                    )
                     y += size + 2
-            except Exception as e:
-                print(f"⚠️ Could not insert main logo: {e}")
-        else:
-            try:
+            else:
                 page.insert_image(logo_area_small, filename=logo_image_path)
-            except Exception as e:
-                print(f"⚠️ Could not insert small logo: {e}")
+        except Exception:
+            pass  # Silently skip logo if insertion fails (memory-safe)
 
-    # --- Save processed PDF ---
+    # Save cleaned PDF to memory stream
     output_stream = io.BytesIO()
     doc.save(output_stream, garbage=3, deflate=True)
     doc.close()
